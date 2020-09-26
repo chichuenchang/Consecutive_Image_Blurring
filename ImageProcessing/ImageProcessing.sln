@@ -1,0 +1,25 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio 15
+VisualStudioVersion = 15.0.28307.1231
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "ImageProcessing", "ImageProcessing\ImageProcessing.vcxproj", "{B5F859FC-94D7-4A78-AF2E-7FEFCA2920AF}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|x64 = Debug|x64
+		Release|x64 = Release|x64
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{B5F859FC-94D7-4A78-AF2E-7FEFCA2920AF}.Debug|x64.ActiveCfg = Debug|x64
+		{B5F859FC-94D7-4A78-AF2E-7FEFCA2920AF}.Debug|x64.Build.0 = Debug|x64
+		{B5F859FC-94D7-4A78-AF2E-7FEFCA2920AF}.Release|x64.ActiveCfg = Release|x64
+		{B5F859FC-94D7-4A78-AF2E-7FEFCA2920AF}.Release|x64.Build.0 = Release|x64
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {0B22A3E8-BB98-4939-B968-1B2010243437}
+	EndGlobalSection
+EndGlobal
