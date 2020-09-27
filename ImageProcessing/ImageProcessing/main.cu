@@ -27,6 +27,9 @@ const int decayRange = 15;
 
 unsigned char* h_imgIns[n] = { nullptr };
 
+const int numOfImgToProcess = 28;
+const int numOfImgInCirclBuff = 5;
+
 __device__ float gausFunc(float x) {
 
 	float sig = 2.0f, pi = 3.1415926f, niu = 0.0f;
@@ -52,7 +55,7 @@ __device__ float trigFunc(float x) {
 }
 
 //5 in 1 out
-__global__ void RecDecayKernel(unsigned char* d_imgIn, unsigned char* d_imgOut, int width, int height, int components, int n) {
+__global__ void RecDecayKernel(unsigned char* d_imgIn, unsigned char* d_imgOut, int width, int height, int components, int n_Img) {
 
 	int frag_x = blockIdx.x * blockDim.x + threadIdx.x;
 	int frag_y = blockIdx.y * blockDim.y + threadIdx.y;
@@ -69,7 +72,7 @@ __global__ void RecDecayKernel(unsigned char* d_imgIn, unsigned char* d_imgOut, 
 	float coeffSum = 0.0;
 	float adjust = 1;
 
-	for (int i = 0; i < n; i++)
+	for (int i = 0; i < n_Img; i++)
 	{
 		//decay
 		coeffSum += recFunc(adjust * (float)i);
@@ -85,7 +88,7 @@ __global__ void RecDecayKernel(unsigned char* d_imgIn, unsigned char* d_imgOut, 
 
 
 // 5 in 1 out
-cudaError_t ImgProcCUDA(unsigned char** h_imgIn, unsigned char* h_imgOut, int* width, int* height, int components, int overrideN) {
+cudaError_t ImgProcCUDA(unsigned char** h_imgIn, unsigned char* h_imgOut, int* width, int* height, int components, int nImgIn) {
 	unsigned char* d_imgIn = 0;
 	unsigned char* d_imgOut = 0;
 	cudaError_t cudaStatus;
@@ -97,7 +100,7 @@ cudaError_t ImgProcCUDA(unsigned char** h_imgIn, unsigned char* h_imgOut, int* w
 		goto Error;
 	}
 
-	// Allocate GPU buffers for three vectors (two input, one output)    .
+	//bufferSize = width * height * n_image( = 5)
 	cudaStatus = cudaMalloc((void**)&d_imgIn, bufferSize * sizeof(unsigned char));
 	if (cudaStatus != cudaSuccess) {
 		fprintf(stderr, "cudaMalloc failed!");
@@ -110,8 +113,10 @@ cudaError_t ImgProcCUDA(unsigned char** h_imgIn, unsigned char* h_imgOut, int* w
 		goto Error;
 	}
 
-	// Copy input image from host memory to GPU buffers.
-	for (int i = 0; i < overrideN; i++)
+	//TODO: copy the latest imageIn to the memory on GPU with order
+	//cudaStatus = cudaMemcpy(d_imgIn + nImgIn % 5 * imageSize, h_imgIn[i], imageSize * sizeof(unsigned char), cudaMemcpyHostToDevice);
+	//free the d_imgIn until finish reading
+	for (int i = 0; i < nImgIn; i++)
 	{
 		cudaStatus = cudaMemcpy(d_imgIn + i * imageSize, h_imgIn[i], imageSize * sizeof(unsigned char), cudaMemcpyHostToDevice);
 		if (cudaStatus != cudaSuccess) {
@@ -125,7 +130,7 @@ cudaError_t ImgProcCUDA(unsigned char** h_imgIn, unsigned char* h_imgOut, int* w
 	dim3 dimGrid(ceil((float)*width / TILE), ceil((float)*height / TILE));
 	dim3 dimBlock(TILE, TILE, 1);
 
-	RecDecayKernel << <dimGrid, dimBlock >> > (d_imgIn, d_imgOut, *width, *height, components, overrideN);
+	RecDecayKernel <<<dimGrid, dimBlock>>> (d_imgIn, d_imgOut, *width, *height, components, nImgIn);
 
 	// Check for any errors launching the kernel
 	cudaStatus = cudaGetLastError();
@@ -157,8 +162,149 @@ Error:
 }
 
 
-//TODO: 1 new keeps coming in, copy to the oldest memory on GPU using mod, 1 out
 
+
+
+cudaError_t test_ImgProcCUDA(int numOfImgToProc) {
+
+
+	//prepare variables for future use
+	//device
+	unsigned char* d_imgIn_test = 0;
+	unsigned char* d_imgOut_test = 0;
+	cudaError_t cudaStatus;
+	//read image
+	int components_test = 0;
+	int requiredComponents_test = 3;
+	int w_test, h_test;
+	unsigned char* h_imgIn_test;
+	//read 1 image to fetch some variables
+	h_imgIn_test = stbi_load("images/(0).jpg", &(w_test), &(h_test), &components_test, requiredComponents_test);
+
+	unsigned int imgSize_test = w_test * h_test * components_test;
+	unsigned long int circularBufferSize = imgSize_test * numOfImgInCirclBuff;
+
+	//=========================================================
+	//allcate first, just for once
+	//=========================================================
+	cudaStatus = cudaSetDevice(0);
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "cudaSetDevice failed!\nDo you have a CUDA-capable GPU installed?");
+		goto Error;
+	}
+
+	//allocate a memory with size of 5 images, preparing circular buffer
+	cudaStatus = cudaMalloc((void**)&d_imgIn_test, circularBufferSize * sizeof(unsigned char));
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "cudaMalloc failed!");
+		goto Error;
+	}
+
+	//1 image out after the kernel operation
+	cudaStatus = cudaMalloc((void**)&d_imgOut_test, imgSize_test * sizeof(unsigned char));
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "cudaMalloc failed!");
+		goto Error;
+	}
+
+	//=========================================================
+	//copy 5 img to GPU at beginnning
+	//=========================================================
+	for (int j = 0; j < 5; j++) {
+
+		string fileName = "images/(" + to_string(j) + ").jpg";
+		h_imgIn_test = stbi_load(fileName.c_str(), &(w_test), &(h_test), &components_test, requiredComponents_test);
+
+		cudaStatus = cudaMemcpy(d_imgIn_test + j * imgSize_test, h_imgIn_test, imgSize_test * sizeof(unsigned char), cudaMemcpyHostToDevice);
+		if (cudaStatus != cudaSuccess) {
+			fprintf(stderr, "cudaMemcpy failed!");
+			goto Error;
+		}
+
+		stbi_image_free(h_imgIn_test);
+	}
+
+
+
+	//=========================================================
+	//from the 6th image
+	//=========================================================
+	for (int i = 5; i < numOfImgToProcess; i++)
+	{
+
+		//=========================================================
+		//READ
+		//=========================================================
+
+		string fileName = "images/(" + to_string(i%imageCount) + ").jpg";
+		h_imgIn_test = stbi_load(fileName.c_str(), &(w_test), &(h_test), &components_test, requiredComponents_test);
+
+
+
+
+		//Copy 1 image at a time using circular buffer
+		//TODO: copy the latest imageIn to the memory on GPU with order
+		//cudaStatus = cudaMemcpy(d_imgIn + nImgIn % 5 * imageSize, h_imgIn[i], imageSize * sizeof(unsigned char), cudaMemcpyHostToDevice);
+		//free the d_imgIn until finish reading
+	
+		cudaStatus = cudaMemcpy(d_imgIn_test + (i % numOfImgInCirclBuff) * imgSize_test, h_imgIn_test, imgSize_test * sizeof(unsigned char), cudaMemcpyHostToDevice);
+		if (cudaStatus != cudaSuccess) {
+			fprintf(stderr, "cudaMemcpy failed!");
+			goto Error;
+		}
+	
+
+		// Launch a kernel on the GPU.
+		const int TILE = 16;
+		dim3 dimGrid(ceil((float)*width / TILE), ceil((float)*height / TILE));
+		dim3 dimBlock(TILE, TILE, 1);
+
+		RecDecayKernel << <dimGrid, dimBlock >> > (d_imgIn, d_imgOut, *width, *height, components, nImgIn);
+
+		// Check for any errors launching the kernel
+		cudaStatus = cudaGetLastError();
+		if (cudaStatus != cudaSuccess) {
+			fprintf(stderr, "Kernel launch failed: %s\n", cudaGetErrorString(cudaStatus));
+			goto Error;
+		}
+
+		// cudaDeviceSynchronize waits for the kernel to finish, and returns
+		// any errors encountered during the launch.
+		cudaStatus = cudaDeviceSynchronize();
+		if (cudaStatus != cudaSuccess) {
+			fprintf(stderr, "cudaDeviceSynchronize returned error code %d after launching kernel!\n", cudaStatus);
+			goto Error;
+		}
+
+		// Copy output image from GPU buffer to host memory.
+		cudaStatus = cudaMemcpy(h_imgOut, d_imgOut, imageSize * sizeof(unsigned char), cudaMemcpyDeviceToHost);
+		if (cudaStatus != cudaSuccess) {
+			fprintf(stderr, "cudaMemcpy failed!");
+			goto Error;
+		}
+
+
+
+		//write into PNG
+
+
+
+	}
+	//for ends==============================================================
+
+
+	//free memory on GPU at last===================================
+Error:
+	cudaFree(d_imgIn);
+	cudaFree(d_imgOut);
+
+	return cudaStatus;
+}
+
+
+//TODO: 1 new keeps coming in, copy to the oldest memory on GPU using mod, 1 out
+//TODO: a function to read the image repeatedly
+//TODO: a function to pass the image to GPU
 
 int main()
 {
@@ -166,8 +312,6 @@ int main()
 	int components = 0;
 	int requiredComponents = 3;
 
-
-	//this loads the file, returns its resultion and number of componnents
 	cout << "\nReading input image";
 	//string a = "images/WeChat Image_201912132356291.jpg";
 	//h_imgIn = stbi_load(a.c_str(), &(width), &(height), &components, requiredComponents);

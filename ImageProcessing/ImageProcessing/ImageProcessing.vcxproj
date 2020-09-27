@@ -81,11 +81,9 @@
   <ItemGroup>
     <CudaCompile Include="decayFunc.cu" />
     <CudaCompile Include="main.cu" />
-    <CudaCompile Include="utility.cu" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="decayFunc.h" />
-    <ClInclude Include="utility.cuh" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
