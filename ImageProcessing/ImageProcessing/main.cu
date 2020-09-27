@@ -162,13 +162,41 @@ Error:
 }
 
 
+__global__ void RecDecayKernel_test(unsigned char* d_imgIn, unsigned char* d_imgOut, int width, int height, int components, int ith_imgIn) {
+
+	int frg_x = blockIdx.x * blockDim.x + threadIdx.x;
+	int frg_y = blockIdx.y * blockDim.y + threadIdx.y;
+	if (frg_x >= width || frg_y >= height) return;
+
+	int frgInd = components * (frg_y * width + frg_x);
+	unsigned long int imagSize = width * height * components;
+
+	d_imgOut[frgInd] = 0;
+	d_imgOut[frgInd + 1] = 0;
+	d_imgOut[frgInd + 2] = 0;
+
+	float _r = 0; float _g = 0; float _b = 0;
+	float coeffSm = 0.0;
+	float adjst = 1;
+
+	for (int c = 0; c < 5; c++)
+	{
+		//decay
+		coeffSm += recFunc(adjst * (float)c);
+		_r += recFunc(adjst * (float)c) * d_imgIn[frgInd + imagSize * ((ith_imgIn + c + 1) % 5)];
+		_g += recFunc(adjst * (float)c) * d_imgIn[frgInd + imagSize * ((ith_imgIn + c + 1) % 5) + 1];
+		_b += recFunc(adjst * (float)c) * d_imgIn[frgInd + imagSize * ((ith_imgIn + c + 1) % 5) + 2];
+	}																		 
+
+	d_imgOut[frgInd + 0] = _r / coeffSm;
+	d_imgOut[frgInd + 1] = _g / coeffSm;
+	d_imgOut[frgInd + 2] = _b / coeffSm;
+}
+
+cudaError_t ImgProcCUDA_test(int numOfImgToProc) {
 
 
-
-cudaError_t test_ImgProcCUDA(int numOfImgToProc) {
-
-
-	//prepare variables for future use
+	//prepare variables
 	//device
 	unsigned char* d_imgIn_test = 0;
 	unsigned char* d_imgOut_test = 0;
@@ -184,9 +212,15 @@ cudaError_t test_ImgProcCUDA(int numOfImgToProc) {
 	unsigned int imgSize_test = w_test * h_test * components_test;
 	unsigned long int circularBufferSize = imgSize_test * numOfImgInCirclBuff;
 
+	//prepare kernel
+	const int TILE = 16;
+	dim3 dimGrid(ceil((float)w_test / TILE), ceil((float)h_test / TILE));
+	dim3 dimBlock(TILE, TILE, 1);
+
+	string outImgName = "0";
+
 	//=========================================================
 	//allcate first, just for once
-	//=========================================================
 	cudaStatus = cudaSetDevice(0);
 	if (cudaStatus != cudaSuccess) {
 		fprintf(stderr, "cudaSetDevice failed!\nDo you have a CUDA-capable GPU installed?");
@@ -208,9 +242,8 @@ cudaError_t test_ImgProcCUDA(int numOfImgToProc) {
 	}
 
 	//=========================================================
-	//copy 5 img to GPU at beginnning
-	//=========================================================
-	for (int j = 0; j < 5; j++) {
+	//copy 4 img to GPU at beginnning
+	for (int j = 0; j < 4; j++) {
 
 		string fileName = "images/(" + to_string(j) + ").jpg";
 		h_imgIn_test = stbi_load(fileName.c_str(), &(w_test), &(h_test), &components_test, requiredComponents_test);
@@ -224,87 +257,83 @@ cudaError_t test_ImgProcCUDA(int numOfImgToProc) {
 		stbi_image_free(h_imgIn_test);
 	}
 
-
-
 	//=========================================================
-	//from the 6th image
-	//=========================================================
-	for (int i = 5; i < numOfImgToProcess; i++)
+	//from the 5th image
+	for (int ithImg = 4; ithImg < numOfImgToProc; ithImg++)
 	{
-
+		std::cout << "computing image" << std::endl;
 		//=========================================================
 		//READ
-		//=========================================================
-
-		string fileName = "images/(" + to_string(i%imageCount) + ").jpg";
+		string fileName = "images/(" + to_string(ithImg % imageCount) + ").jpg";
 		h_imgIn_test = stbi_load(fileName.c_str(), &(w_test), &(h_test), &components_test, requiredComponents_test);
+		if (!h_imgIn_test) {
+			cout << "Cannot read input image, invalid path?" << endl;
+			exit(-1);
+		}
 
-
-
-
+		//=====================================
+		//Copy
 		//Copy 1 image at a time using circular buffer
 		//TODO: copy the latest imageIn to the memory on GPU with order
 		//cudaStatus = cudaMemcpy(d_imgIn + nImgIn % 5 * imageSize, h_imgIn[i], imageSize * sizeof(unsigned char), cudaMemcpyHostToDevice);
 		//free the d_imgIn until finish reading
-	
-		cudaStatus = cudaMemcpy(d_imgIn_test + (i % numOfImgInCirclBuff) * imgSize_test, h_imgIn_test, imgSize_test * sizeof(unsigned char), cudaMemcpyHostToDevice);
+		cudaStatus = cudaMemcpy(d_imgIn_test + (ithImg % numOfImgInCirclBuff) * imgSize_test, h_imgIn_test, imgSize_test * sizeof(unsigned char), cudaMemcpyHostToDevice);
 		if (cudaStatus != cudaSuccess) {
 			fprintf(stderr, "cudaMemcpy failed!");
 			goto Error;
 		}
+
+		//=======================================================
+		//free loaded image from memory
+		stbi_image_free(h_imgIn_test);
 	
 
+		//=======================================================
+		//Kernel
+		//taking 5 pictures
 		// Launch a kernel on the GPU.
-		const int TILE = 16;
-		dim3 dimGrid(ceil((float)*width / TILE), ceil((float)*height / TILE));
-		dim3 dimBlock(TILE, TILE, 1);
+		RecDecayKernel_test <<<dimGrid, dimBlock >>> (d_imgIn_test, d_imgOut_test, w_test, h_test, components_test, ithImg);
 
-		RecDecayKernel << <dimGrid, dimBlock >> > (d_imgIn, d_imgOut, *width, *height, components, nImgIn);
-
+		//========================================================
 		// Check for any errors launching the kernel
 		cudaStatus = cudaGetLastError();
 		if (cudaStatus != cudaSuccess) {
 			fprintf(stderr, "Kernel launch failed: %s\n", cudaGetErrorString(cudaStatus));
 			goto Error;
 		}
-
-		// cudaDeviceSynchronize waits for the kernel to finish, and returns
-		// any errors encountered during the launch.
 		cudaStatus = cudaDeviceSynchronize();
 		if (cudaStatus != cudaSuccess) {
 			fprintf(stderr, "cudaDeviceSynchronize returned error code %d after launching kernel!\n", cudaStatus);
 			goto Error;
 		}
 
-		// Copy output image from GPU buffer to host memory.
-		cudaStatus = cudaMemcpy(h_imgOut, d_imgOut, imageSize * sizeof(unsigned char), cudaMemcpyDeviceToHost);
+		// Copy output image from dev to host .
+		cudaStatus = cudaMemcpy(h_imgOut, d_imgOut_test, imageSize * sizeof(unsigned char), cudaMemcpyDeviceToHost);
 		if (cudaStatus != cudaSuccess) {
 			fprintf(stderr, "cudaMemcpy failed!");
 			goto Error;
 		}
 
-
-
-		//write into PNG
-
-
+		//write into PNG=============================================
+		cout << "Saving the image\n";
+		outImgName = "images/result-" + to_string(ithImg - 4) + ".png";
+		int result = stbi_write_png(outImgName.c_str(), w_test, h_test, components_test, h_imgOut, 0);
+		if (!result) {
+			cout << "Something went wrong during writing. Invalid path?" << endl;
+			//return 0;
+		}
 
 	}
-	//for ends==============================================================
 
-
-	//free memory on GPU at last===================================
+	//===========================================================
+	//free memory on GPU at last
 Error:
-	cudaFree(d_imgIn);
-	cudaFree(d_imgOut);
+	cudaFree(d_imgIn_test);
+	cudaFree(d_imgOut_test);
 
 	return cudaStatus;
 }
 
-
-//TODO: 1 new keeps coming in, copy to the oldest memory on GPU using mod, 1 out
-//TODO: a function to read the image repeatedly
-//TODO: a function to pass the image to GPU
 
 int main()
 {
@@ -313,18 +342,11 @@ int main()
 	int requiredComponents = 3;
 
 	cout << "\nReading input image";
-	//string a = "images/WeChat Image_201912132356291.jpg";
-	//h_imgIn = stbi_load(a.c_str(), &(width), &(height), &components, requiredComponents);
 
 	for (int i = 0; i < n; i++)
 	{
 		string fileName = "images/(" + to_string(i) + ").jpg";
 		h_imgIns[i] = stbi_load(fileName.c_str(), &(width), &(height), &components, requiredComponents);
-	}
-
-	/*if (!h_imgIn) {*/
-	for (int i = 0; i < n; i++)
-	{
 		if (!h_imgIns[i]) {
 			cout << "Cannot read input image, invalid path?" << endl;
 			exit(-1);
@@ -340,6 +362,7 @@ int main()
 	}
 
 	cudaError_t cudaStatus;
+
 	for (int i = 0; i < n - 1; i++)
 	{
 		cout << "\nProcessing the image";
