@@ -19,7 +19,7 @@ using namespace std;
 int width, height;
 unsigned long int imageSize = 0;
 unsigned long int bufferSize = 0;
-unsigned char *h_imgIn, *h_imgOut;
+unsigned char* h_imgIn, * h_imgOut;
 
 const int n = 5;
 const int imageCount = 28;
@@ -36,21 +36,22 @@ __device__ float gausFunc(float x) {
 
 __device__ float recFunc(float x) {
 
-	float d = 0.5;
+	float d = 5;
 	if (x < d) return 1.0;
-	else if (x = d) return 0.5;
+	else if (x == d) return 0.5;
 	else return 0;
 }
 
 __device__ float trigFunc(float x) {
 
 	const float k = 0.3;
-	float y = 1 - k* fabs(x);
+	float y = 1 - k * fabs(x);
 
 	if (y < 0) y = 0;
 	return y;
 }
 
+//5 in 1 out
 __global__ void RecDecayKernel(unsigned char* d_imgIn, unsigned char* d_imgOut, int width, int height, int components, int n) {
 
 	int frag_x = blockIdx.x * blockDim.x + threadIdx.x;
@@ -63,17 +64,18 @@ __global__ void RecDecayKernel(unsigned char* d_imgIn, unsigned char* d_imgOut, 
 	d_imgOut[fragInd] = 0;
 	d_imgOut[fragInd + 1] = 0;
 	d_imgOut[fragInd + 2] = 0;
-	
+
 	float r = 0; float g = 0; float b = 0;
 	float coeffSum = 0.0;
 	float adjust = 1;
 
 	for (int i = 0; i < n; i++)
 	{
-		coeffSum += recFunc(adjust * (float)n);
-		r += recFunc(adjust * (float)n) * d_imgIn[fragInd + imgSize * i];
-		g += recFunc(adjust * (float)n) * d_imgIn[fragInd + imgSize * i + 1];
-		b += recFunc(adjust * (float)n) * d_imgIn[fragInd + imgSize * i + 2];
+		//decay
+		coeffSum += recFunc(adjust * (float)i);
+		r += recFunc(adjust * (float)i) * d_imgIn[fragInd + imgSize * i];
+		g += recFunc(adjust * (float)i) * d_imgIn[fragInd + imgSize * i + 1];
+		b += recFunc(adjust * (float)i) * d_imgIn[fragInd + imgSize * i + 2];
 	}
 
 	d_imgOut[fragInd + 0] = r / coeffSum;
@@ -81,19 +83,11 @@ __global__ void RecDecayKernel(unsigned char* d_imgIn, unsigned char* d_imgOut, 
 	d_imgOut[fragInd + 2] = b / coeffSum;
 }
 
-__global__ void trigDecayKernal(unsigned char* d_imgIn, unsigned char* d_imgOut, int width, int height, int components, int n) {
 
-
-
-
-
-}
-
-
-// Helper function for using CUDA 
-cudaError_t ImgProcCUDA(unsigned char *h_imgIn[n], unsigned char *h_imgOut, int *width, int *height, int components, int overrideN) {
-	unsigned char *d_imgIn = 0;
-	unsigned char *d_imgOut = 0;
+// 5 in 1 out
+cudaError_t ImgProcCUDA(unsigned char** h_imgIn, unsigned char* h_imgOut, int* width, int* height, int components, int overrideN) {
+	unsigned char* d_imgIn = 0;
+	unsigned char* d_imgOut = 0;
 	cudaError_t cudaStatus;
 
 	// Choose which GPU to run on, change this on a multi-GPU system.
@@ -128,10 +122,10 @@ cudaError_t ImgProcCUDA(unsigned char *h_imgIn[n], unsigned char *h_imgOut, int 
 
 	// Launch a kernel on the GPU.
 	const int TILE = 16;
-	dim3 dimGrid(ceil((float)*width/TILE), ceil((float)*height/TILE));
+	dim3 dimGrid(ceil((float)*width / TILE), ceil((float)*height / TILE));
 	dim3 dimBlock(TILE, TILE, 1);
-	
-	RecDecayKernel <<<dimGrid, dimBlock >>> (d_imgIn, d_imgOut, *width, *height, components, overrideN);
+
+	RecDecayKernel << <dimGrid, dimBlock >> > (d_imgIn, d_imgOut, *width, *height, components, overrideN);
 
 	// Check for any errors launching the kernel
 	cudaStatus = cudaGetLastError();
@@ -163,12 +157,15 @@ Error:
 }
 
 
+//TODO: 1 new keeps coming in, copy to the oldest memory on GPU using mod, 1 out
+
+
 int main()
 {
 	//read the image first
 	int components = 0;
 	int requiredComponents = 3;
-	
+
 
 	//this loads the file, returns its resultion and number of componnents
 	cout << "\nReading input image";
@@ -202,7 +199,7 @@ int main()
 	for (int i = 0; i < n - 1; i++)
 	{
 		cout << "\nProcessing the image";
-		
+
 		cudaStatus = ImgProcCUDA(h_imgIns, h_imgOut, &width, &height, components, i + 1);
 		if (cudaStatus != cudaSuccess) {
 			fprintf(stderr, "Cuda krenel failed!");
@@ -254,13 +251,13 @@ int main()
 		}
 	}
 
-    // cudaDeviceReset must be called before exiting in order for profiling and
-    // tracing tools such as Nsight and Visual Profiler to show complete traces.
-    cudaStatus = cudaDeviceReset();
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaDeviceReset failed!");
-        return 1;
-    }
+	// cudaDeviceReset must be called before exiting in order for profiling and
+	// tracing tools such as Nsight and Visual Profiler to show complete traces.
+	cudaStatus = cudaDeviceReset();
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "cudaDeviceReset failed!");
+		return 1;
+	}
 	cout << "\nDone\n";
 	return 0;
 }
