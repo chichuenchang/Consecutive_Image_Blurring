@@ -1,4 +1,4 @@
-# CGT620_Lab4_ImgProcess
+# Image Processing
  (decay function, circular buffer)
  
 This project combine several consecutive pictures into 1 with a blurring effect
