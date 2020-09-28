@@ -12,23 +12,18 @@
 #include "stb_image.h"
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
-//#include <string>
+#include <vector>
 
 using namespace std;
 
-int width, height;
-unsigned long int imageSize = 0;
-unsigned long int bufferSize = 0;
+
 unsigned char* h_imgIn, * h_imgOut;
 
-const int n = 5;
+//const int decayRange = 15;
 const int imageCount = 28;
-const int decayRange = 15;
-
-unsigned char* h_imgIns[n] = { nullptr };
-
 const int numOfImgToProcess = 28;
 const int numOfImgInCirclBuff = 5;
+const int numOfImgCtrdg = 5;
 
 __device__ float gausFunc(float x) {
 
@@ -39,7 +34,7 @@ __device__ float gausFunc(float x) {
 
 __device__ float recFunc(float x) {
 
-	float d = 5;
+	float d = 1;
 	if (x < d) return 1.0;
 	else if (x == d) return 0.5;
 	else return 0;
@@ -54,8 +49,34 @@ __device__ float trigFunc(float x) {
 	return y;
 }
 
+void printResult(vector<double>* time, int imgW, int imgH, int channel) {
+
+	vector<double>::iterator iter;
+	int c = 0;
+	double t = 0.0;
+	float average = 0.0;
+	float stDev = 0.0;
+
+	for (iter = time->begin(); iter != time->end(); iter++) {
+		c++;
+		t += *iter;
+	}
+	average = (float)t / c;
+
+	float temp = 0.0;
+	for (iter = time->begin(); iter != time->end(); iter++) {
+		temp += (*iter - average) * (*iter - average);
+	}
+
+	stDev = sqrt(temp / c);
+
+	cout << "\naverage time per loop: " << average << "s +- " << stDev<< "s"<< endl;
+	cout << "image size (in byte) = " << imgW << " * " << imgH << " * " << channel << " = " << imgW * imgH * channel << endl;
+
+}
+
 //5 in 1 out
-__global__ void RecDecayKernel(unsigned char* d_imgIn, unsigned char* d_imgOut, int width, int height, int components, int n_Img) {
+__global__ void RecDecayKernel_ctrdg(unsigned char* d_imgIn, unsigned char* d_imgOut, int width, int height, int components, int n_Img) {
 
 	int frag_x = blockIdx.x * blockDim.x + threadIdx.x;
 	int frag_y = blockIdx.y * blockDim.y + threadIdx.y;
@@ -70,9 +91,9 @@ __global__ void RecDecayKernel(unsigned char* d_imgIn, unsigned char* d_imgOut, 
 
 	float r = 0; float g = 0; float b = 0;
 	float coeffSum = 0.0;
-	float adjust = 1;
+	float adjust = 0.1;
 
-	for (int i = 0; i < n_Img; i++)
+	for (int i = n_Img -1 ; i >= 0; i--)
 	{
 		//decay
 		coeffSum += recFunc(adjust * (float)i);
@@ -86,12 +107,14 @@ __global__ void RecDecayKernel(unsigned char* d_imgIn, unsigned char* d_imgOut, 
 	d_imgOut[fragInd + 2] = b / coeffSum;
 }
 
-
 // 5 in 1 out
 cudaError_t ImgProcCUDA(unsigned char** h_imgIn, unsigned char* h_imgOut, int* width, int* height, int components, int nImgIn) {
 	unsigned char* d_imgIn = 0;
 	unsigned char* d_imgOut = 0;
 	cudaError_t cudaStatus;
+
+	unsigned int imgSize = *width * *height * components;
+	unsigned int buffSize = imgSize * nImgIn;
 
 	// Choose which GPU to run on, change this on a multi-GPU system.
 	cudaStatus = cudaSetDevice(0);
@@ -101,13 +124,13 @@ cudaError_t ImgProcCUDA(unsigned char** h_imgIn, unsigned char* h_imgOut, int* w
 	}
 
 	//bufferSize = width * height * n_image( = 5)
-	cudaStatus = cudaMalloc((void**)&d_imgIn, bufferSize * sizeof(unsigned char));
+	cudaStatus = cudaMalloc((void**)&d_imgIn, buffSize * sizeof(unsigned char));
 	if (cudaStatus != cudaSuccess) {
 		fprintf(stderr, "cudaMalloc failed!");
 		goto Error;
 	}
 
-	cudaStatus = cudaMalloc((void**)&d_imgOut, imageSize * sizeof(unsigned char));
+	cudaStatus = cudaMalloc((void**)&d_imgOut, imgSize * sizeof(unsigned char));
 	if (cudaStatus != cudaSuccess) {
 		fprintf(stderr, "cudaMalloc failed!");
 		goto Error;
@@ -118,7 +141,7 @@ cudaError_t ImgProcCUDA(unsigned char** h_imgIn, unsigned char* h_imgOut, int* w
 	//free the d_imgIn until finish reading
 	for (int i = 0; i < nImgIn; i++)
 	{
-		cudaStatus = cudaMemcpy(d_imgIn + i * imageSize, h_imgIn[i], imageSize * sizeof(unsigned char), cudaMemcpyHostToDevice);
+		cudaStatus = cudaMemcpy(d_imgIn + i * imgSize, h_imgIn[i], imgSize * sizeof(unsigned char), cudaMemcpyHostToDevice);
 		if (cudaStatus != cudaSuccess) {
 			fprintf(stderr, "cudaMemcpy failed!");
 			goto Error;
@@ -130,7 +153,7 @@ cudaError_t ImgProcCUDA(unsigned char** h_imgIn, unsigned char* h_imgOut, int* w
 	dim3 dimGrid(ceil((float)*width / TILE), ceil((float)*height / TILE));
 	dim3 dimBlock(TILE, TILE, 1);
 
-	RecDecayKernel <<<dimGrid, dimBlock>>> (d_imgIn, d_imgOut, *width, *height, components, nImgIn);
+	RecDecayKernel_ctrdg <<<dimGrid, dimBlock>>> (d_imgIn, d_imgOut, *width, *height, components, nImgIn);
 
 	// Check for any errors launching the kernel
 	cudaStatus = cudaGetLastError();
@@ -148,7 +171,7 @@ cudaError_t ImgProcCUDA(unsigned char** h_imgIn, unsigned char* h_imgOut, int* w
 	}
 
 	// Copy output image from GPU buffer to host memory.
-	cudaStatus = cudaMemcpy(h_imgOut, d_imgOut, imageSize * sizeof(unsigned char), cudaMemcpyDeviceToHost);
+	cudaStatus = cudaMemcpy(h_imgOut, d_imgOut, imgSize * sizeof(unsigned char), cudaMemcpyDeviceToHost);
 	if (cudaStatus != cudaSuccess) {
 		fprintf(stderr, "cudaMemcpy failed!");
 		goto Error;
@@ -162,7 +185,104 @@ Error:
 }
 
 
-__global__ void RecDecayKernel_test(unsigned char* d_imgIn, unsigned char* d_imgOut, int width, int height, int components, int ith_imgIn) {
+cudaError_t ImgProcCUDA_cartridgeBuff(int numOfImgToProc, int numImages) {
+
+	cudaError_t cudaStatus;
+
+	int width, height;
+	unsigned long int imageSize = 0;
+	unsigned long int bufferSize = 0;
+
+	int components = 0;
+	int requiredComponents = 3;
+
+	unsigned char* h_imgInCtrdgBuff[numOfImgCtrdg] = { nullptr };
+
+	//time
+	clock_t tStart;
+	vector<double> timeRecord;
+
+	cout << "\nReading input image";
+
+	//======================================================
+	//read 5 images to the cartridge buffer
+	//get width & height
+	for (int i = 0; i < numOfImgCtrdg; i++)
+	{
+		string fileName = "images/source(" + to_string(i) + ").jpg";
+		h_imgInCtrdgBuff[i] = stbi_load(fileName.c_str(), &(width), &(height), &components, requiredComponents);
+		if (!h_imgInCtrdgBuff[i]) {
+			cout << "Cannot read input image, invalid path?" << endl;
+			exit(-1);
+		}
+	}
+
+	imageSize = width * height * components;
+	bufferSize = imageSize * numOfImgCtrdg;
+
+	//prepare output memory to be copied into
+	h_imgOut = (unsigned char*)malloc(imageSize * sizeof(unsigned char));
+	if (h_imgOut == NULL) {
+		cout << "host side malloc failed" << endl;
+		exit(-1);
+	}
+
+	//======================================================
+	//start from 5th
+	for (int i = numOfImgCtrdg; i < numOfImgToProc; i++)
+	{
+		//========================================
+		//measure performance
+		tStart = clock();
+
+		cout << "\nProcessing the image";
+		// Run the memory copies, kernel, copy back from the helper
+		cudaStatus = ImgProcCUDA(h_imgInCtrdgBuff, h_imgOut, &width, &height, components, numOfImgCtrdg);
+		if (cudaStatus != cudaSuccess) {
+			fprintf(stderr, "Cuda krenel failed!");
+			exit(-1);
+		}
+
+		cout << "\nTime taken this loop: " << (double)(clock() - tStart) / CLOCKS_PER_SEC << endl;
+
+		cout << "\nSaving the image";
+		//save the output image
+		string outputFileName = "images/zresult-" + to_string(i - 5) + ".png";
+		int result = stbi_write_png(outputFileName.c_str(), width, height, components, h_imgOut, 0);
+		if (!result) {
+			cout << "Something went wrong during writing. Invalid path?" << endl;
+			exit(-1);
+		}
+
+		stbi_image_free(h_imgInCtrdgBuff[0]);
+
+		//move each img data 1 slot forward
+		for (int j = 0; j < numOfImgCtrdg - 1; j++)
+		{
+			h_imgInCtrdgBuff[j] = h_imgInCtrdgBuff[j + 1];
+		}
+
+		//always write to the final slot
+		string fileName = "images/source(" + to_string(i % numImages) + ").jpg";
+		h_imgInCtrdgBuff[4] = stbi_load(fileName.c_str(), &(width), &(height), &components, requiredComponents);
+		if (!h_imgInCtrdgBuff[4]) {
+			cout << "Cannot read input image, invalid path?" << endl;
+			exit(-1);
+		}
+
+		//output time taken each loop
+		
+		timeRecord.push_back((double)(clock() - tStart) / CLOCKS_PER_SEC);
+	}
+
+	printResult(&timeRecord, width, height, components);
+
+	return cudaStatus;
+}
+
+
+
+__global__ void RecDecayKernel_circularBuff(unsigned char* d_imgIn, unsigned char* d_imgOut, int width, int height, int components, int ith_imgIn) {
 
 	int frg_x = blockIdx.x * blockDim.x + threadIdx.x;
 	int frg_y = blockIdx.y * blockDim.y + threadIdx.y;
@@ -177,15 +297,19 @@ __global__ void RecDecayKernel_test(unsigned char* d_imgIn, unsigned char* d_img
 
 	float _r = 0; float _g = 0; float _b = 0;
 	float coeffSm = 0.0;
-	float adjst = 1;
+	float adjst = 1.0;
 
-	for (int c = 0; c < 5; c++)
+	for (int c = 4; c >= 0; c--) 
 	{
 		//decay
-		coeffSm += recFunc(adjst * (float)c);
-		_r += recFunc(adjst * (float)c) * d_imgIn[frgInd + imagSize * ((ith_imgIn + c + 1) % 5)];
-		_g += recFunc(adjst * (float)c) * d_imgIn[frgInd + imagSize * ((ith_imgIn + c + 1) % 5) + 1];
-		_b += recFunc(adjst * (float)c) * d_imgIn[frgInd + imagSize * ((ith_imgIn + c + 1) % 5) + 2];
+		coeffSm += gausFunc(adjst * (float)(4 - c));
+		//_r += recFunc(adjst * (float)c) * d_imgIn[frgInd + imagSize * ((ith_imgIn + c + 1) % 5)];
+		//_g += recFunc(adjst * (float)c) * d_imgIn[frgInd + imagSize * ((ith_imgIn + c + 1) % 5) + 1];
+		//_b += recFunc(adjst * (float)c) * d_imgIn[frgInd + imagSize * ((ith_imgIn + c + 1) % 5) + 2];
+
+		_r += gausFunc(adjst * (float)(4 - c)) * d_imgIn[frgInd + imagSize * ((ith_imgIn + c - 4) % 5)];
+		_g += gausFunc(adjst * (float)(4 - c)) * d_imgIn[frgInd + imagSize * ((ith_imgIn + c - 4) % 5) + 1];
+		_b += gausFunc(adjst * (float)(4 - c)) * d_imgIn[frgInd + imagSize * ((ith_imgIn + c - 4) % 5) + 2];
 	}																		 
 
 	d_imgOut[frgInd + 0] = _r / coeffSm;
@@ -193,7 +317,7 @@ __global__ void RecDecayKernel_test(unsigned char* d_imgIn, unsigned char* d_img
 	d_imgOut[frgInd + 2] = _b / coeffSm;
 }
 
-cudaError_t ImgProcCUDA_test(int numOfImgToProc) {
+cudaError_t ImgProcCUDA_CircularBuff(int numOfImgToProc, int numImages) {
 
 
 	//prepare variables
@@ -205,17 +329,27 @@ cudaError_t ImgProcCUDA_test(int numOfImgToProc) {
 	int components_test = 0;
 	int requiredComponents_test = 3;
 	int w_test, h_test;
-	unsigned char* h_imgIn_test;
+	unsigned char* h_imgIn_test, * h_imgOut_test;
+
+	//time
+	clock_t tStart;
+	vector<double> timeRecord;
+
 	//read 1 image to fetch some variables
-	h_imgIn_test = stbi_load("images/(0).jpg", &(w_test), &(h_test), &components_test, requiredComponents_test);
+	h_imgIn_test = stbi_load("images/source(0).jpg", &(w_test), &(h_test), &components_test, requiredComponents_test);
+	if (!h_imgIn_test) {
+		cout << "Cannot read input image, invalid path?" << endl;
+		exit(-1);
+	}
 
 	unsigned int imgSize_test = w_test * h_test * components_test;
 	unsigned long int circularBufferSize = imgSize_test * numOfImgInCirclBuff;
 
-	//prepare kernel
-	const int TILE = 16;
-	dim3 dimGrid(ceil((float)w_test / TILE), ceil((float)h_test / TILE));
-	dim3 dimBlock(TILE, TILE, 1);
+	h_imgOut_test = (unsigned char*)malloc(imgSize_test * sizeof(unsigned char));
+	if (h_imgOut_test == NULL) {
+		cout << "host side malloc failed" << endl;
+		exit(-1);
+	}
 
 	string outImgName = "0";
 
@@ -245,12 +379,12 @@ cudaError_t ImgProcCUDA_test(int numOfImgToProc) {
 	//copy 4 img to GPU at beginnning
 	for (int j = 0; j < 4; j++) {
 
-		string fileName = "images/(" + to_string(j) + ").jpg";
+		string fileName = "images/source(" + to_string(j) + ").jpg";
 		h_imgIn_test = stbi_load(fileName.c_str(), &(w_test), &(h_test), &components_test, requiredComponents_test);
 
 		cudaStatus = cudaMemcpy(d_imgIn_test + j * imgSize_test, h_imgIn_test, imgSize_test * sizeof(unsigned char), cudaMemcpyHostToDevice);
 		if (cudaStatus != cudaSuccess) {
-			fprintf(stderr, "cudaMemcpy failed!");
+			fprintf(stderr, "cudaMemcpy failed 0!");
 			goto Error;
 		}
 
@@ -261,16 +395,18 @@ cudaError_t ImgProcCUDA_test(int numOfImgToProc) {
 	//from the 5th image
 	for (int ithImg = 4; ithImg < numOfImgToProc; ithImg++)
 	{
-		std::cout << "computing image" << std::endl;
+	
+		std::cout << "reading image" << std::endl;
 		//=========================================================
 		//READ
-		string fileName = "images/(" + to_string(ithImg % imageCount) + ").jpg";
+		string fileName = "images/source(" + to_string(ithImg % numImages) + ").jpg";
 		h_imgIn_test = stbi_load(fileName.c_str(), &(w_test), &(h_test), &components_test, requiredComponents_test);
 		if (!h_imgIn_test) {
 			cout << "Cannot read input image, invalid path?" << endl;
 			exit(-1);
 		}
 
+		tStart = clock();
 		//=====================================
 		//Copy
 		//Copy 1 image at a time using circular buffer
@@ -279,20 +415,39 @@ cudaError_t ImgProcCUDA_test(int numOfImgToProc) {
 		//free the d_imgIn until finish reading
 		cudaStatus = cudaMemcpy(d_imgIn_test + (ithImg % numOfImgInCirclBuff) * imgSize_test, h_imgIn_test, imgSize_test * sizeof(unsigned char), cudaMemcpyHostToDevice);
 		if (cudaStatus != cudaSuccess) {
-			fprintf(stderr, "cudaMemcpy failed!");
+			fprintf(stderr, "cudaMemcpy failed 2 !");
 			goto Error;
 		}
 
 		//=======================================================
 		//free loaded image from memory
-		stbi_image_free(h_imgIn_test);
+		delete[] (h_imgIn_test);
 	
 
 		//=======================================================
 		//Kernel
 		//taking 5 pictures
 		// Launch a kernel on the GPU.
-		RecDecayKernel_test <<<dimGrid, dimBlock >>> (d_imgIn_test, d_imgOut_test, w_test, h_test, components_test, ithImg);
+		//prepare kernel
+		const int TILE = 16;
+		dim3 dimGrid(ceil((float)w_test / TILE), ceil((float)h_test / TILE));
+		dim3 dimBlock(TILE, TILE, 1);
+		
+		cudaEvent_t startT, stopT;
+		float time;
+		cudaEventCreate(&startT, 0);
+		cudaEventRecord(startT);
+
+		RecDecayKernel_circularBuff <<< dimGrid, dimBlock >>> (d_imgIn_test, d_imgOut_test, w_test, h_test, components_test, ithImg);
+
+		cudaEventCreate(&stopT);
+		cudaEventRecord(stopT, 0);
+		cudaEventSynchronize(stopT);
+		cudaEventElapsedTime(&time, startT, stopT);
+		cudaEventDestroy(startT);
+		cudaEventDestroy(stopT);
+		std::cout << "kernel excecution time: " << time * 0.001f << "s\n";
+		
 
 		//========================================================
 		// Check for any errors launching the kernel
@@ -301,29 +456,37 @@ cudaError_t ImgProcCUDA_test(int numOfImgToProc) {
 			fprintf(stderr, "Kernel launch failed: %s\n", cudaGetErrorString(cudaStatus));
 			goto Error;
 		}
+
 		cudaStatus = cudaDeviceSynchronize();
 		if (cudaStatus != cudaSuccess) {
 			fprintf(stderr, "cudaDeviceSynchronize returned error code %d after launching kernel!\n", cudaStatus);
 			goto Error;
 		}
 
-		// Copy output image from dev to host .
-		cudaStatus = cudaMemcpy(h_imgOut, d_imgOut_test, imageSize * sizeof(unsigned char), cudaMemcpyDeviceToHost);
+		// Copy from dev to host .
+		cudaStatus = cudaMemcpy(h_imgOut_test, d_imgOut_test, w_test*h_test*components_test * sizeof(unsigned char), cudaMemcpyDeviceToHost);
 		if (cudaStatus != cudaSuccess) {
-			fprintf(stderr, "cudaMemcpy failed!");
+			fprintf(stderr, "cudaMemcpy failed 1!");
 			goto Error;
 		}
 
+		cout << "\nTime taken this loop: " << (double)(clock() - tStart) / CLOCKS_PER_SEC << endl;
+
 		//write into PNG=============================================
 		cout << "Saving the image\n";
-		outImgName = "images/result-" + to_string(ithImg - 4) + ".png";
-		int result = stbi_write_png(outImgName.c_str(), w_test, h_test, components_test, h_imgOut, 0);
+		outImgName = "images/zresult-" + to_string(ithImg - 4) + ".png";
+		int result = stbi_write_png(outImgName.c_str(), w_test, h_test, components_test, h_imgOut_test, 0);
 		if (!result) {
 			cout << "Something went wrong during writing. Invalid path?" << endl;
 			//return 0;
 		}
 
+
+		//output time taken each loop
+		timeRecord.push_back((double)(clock() - tStart) / CLOCKS_PER_SEC);
 	}
+
+	printResult(&timeRecord, w_test, h_test, components_test);
 
 	//===========================================================
 	//free memory on GPU at last
@@ -335,88 +498,14 @@ Error:
 }
 
 
+
 int main()
 {
-	//read the image first
-	int components = 0;
-	int requiredComponents = 3;
-
-	cout << "\nReading input image";
-
-	for (int i = 0; i < n; i++)
-	{
-		string fileName = "images/(" + to_string(i) + ").jpg";
-		h_imgIns[i] = stbi_load(fileName.c_str(), &(width), &(height), &components, requiredComponents);
-		if (!h_imgIns[i]) {
-			cout << "Cannot read input image, invalid path?" << endl;
-			exit(-1);
-		}
-	}
-
-	imageSize = width * height * components;
-	bufferSize = imageSize * n;
-	h_imgOut = (unsigned char*)malloc(imageSize * sizeof(unsigned char));
-	if (h_imgOut == NULL) {
-		cout << "malloc failed" << endl;
-		exit(-1);
-	}
-
 	cudaError_t cudaStatus;
 
-	for (int i = 0; i < n - 1; i++)
-	{
-		cout << "\nProcessing the image";
-
-		cudaStatus = ImgProcCUDA(h_imgIns, h_imgOut, &width, &height, components, i + 1);
-		if (cudaStatus != cudaSuccess) {
-			fprintf(stderr, "Cuda krenel failed!");
-			return 1;
-		}
-		cout << "\nSaving the image";
-		//save the output image
-		string outputFileName = "images/result-" + to_string(i) + ".png";
-		int result = stbi_write_png(outputFileName.c_str(), width, height, components, h_imgOut, 0);
-		if (!result) {
-			cout << "Something went wrong during writing. Invalid path?" << endl;
-			return 0;
-		}
-	}
-
-	for (int i = n; i < imageCount + 1; i++)
-	{
-		cout << "\nProcessing the image";
-		// Run the memory copies, kernel, copy back from the helper
-		//cudaError_t cudaStatus = ImgProcCUDA(h_imgIn, h_imgOut, &width, &height, components, decayRange);
-		cudaStatus = ImgProcCUDA(h_imgIns, h_imgOut, &width, &height, components, n);
-		if (cudaStatus != cudaSuccess) {
-			fprintf(stderr, "Cuda krenel failed!");
-			return 1;
-		}
-		cout << "\nSaving the image";
-		//save the output image
-		string outputFileName = "images/result-" + to_string(i - 1) + ".png";
-		int result = stbi_write_png(outputFileName.c_str(), width, height, components, h_imgOut, 0);
-		if (!result) {
-			cout << "Something went wrong during writing. Invalid path?" << endl;
-			return 0;
-		}
-
-		if (i < imageCount)
-		{
-			stbi_image_free(h_imgIns[0]);
-			for (int j = 0; j < n - 1; j++)
-			{
-				h_imgIns[j] = h_imgIns[j + 1];
-			}
-
-			string fileName = "images/(" + to_string(i) + ").jpg";
-			h_imgIns[4] = stbi_load(fileName.c_str(), &(width), &(height), &components, requiredComponents);
-			if (!h_imgIns[4]) {
-				cout << "Cannot read input image, invalid path?" << endl;
-				exit(-1);
-			}
-		}
-	}
+	ImgProcCUDA_CircularBuff(300, imageCount);
+	//ImgProcCUDA_cartridgeBuff(200, imageCount);
+	
 
 	// cudaDeviceReset must be called before exiting in order for profiling and
 	// tracing tools such as Nsight and Visual Profiler to show complete traces.
