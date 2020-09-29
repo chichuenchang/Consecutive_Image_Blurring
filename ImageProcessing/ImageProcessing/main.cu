@@ -70,7 +70,8 @@ void printResult(vector<double>* time, int imgW, int imgH, int channel) {
 
 	stDev = sqrt(temp / c);
 
-	cout << "\naverage time per loop: " << average << "s +- " << stDev<< "s"<< endl;
+	cout <<"\n "<< c + 4<< " images processed, took " << t << " seconds" << endl;
+	cout << "\naverage time per image processed: " << average << "s +- " << stDev<< "s"<< endl;
 	cout << "image size (in byte) = " << imgW << " * " << imgH << " * " << channel << " = " << imgW * imgH * channel << endl;
 
 }
@@ -96,10 +97,10 @@ __global__ void RecDecayKernel_ctrdg(unsigned char* d_imgIn, unsigned char* d_im
 	for (int i = n_Img -1 ; i >= 0; i--)
 	{
 		//decay
-		coeffSum += recFunc(adjust * (float)i);
-		r += recFunc(adjust * (float)i) * d_imgIn[fragInd + imgSize * i];
-		g += recFunc(adjust * (float)i) * d_imgIn[fragInd + imgSize * i + 1];
-		b += recFunc(adjust * (float)i) * d_imgIn[fragInd + imgSize * i + 2];
+		coeffSum += trigFunc(adjust * (float)i);
+		r += trigFunc(adjust * (float)i) * d_imgIn[fragInd + imgSize * i];
+		g += trigFunc(adjust * (float)i) * d_imgIn[fragInd + imgSize * i + 1];
+		b += trigFunc(adjust * (float)i) * d_imgIn[fragInd + imgSize * i + 2];
 	}
 
 	d_imgOut[fragInd + 0] = r / coeffSum;
@@ -302,14 +303,14 @@ __global__ void RecDecayKernel_circularBuff(unsigned char* d_imgIn, unsigned cha
 	for (int c = 4; c >= 0; c--) 
 	{
 		//decay
-		coeffSm += gausFunc(adjst * (float)(4 - c));
-		//_r += recFunc(adjst * (float)c) * d_imgIn[frgInd + imagSize * ((ith_imgIn + c + 1) % 5)];
-		//_g += recFunc(adjst * (float)c) * d_imgIn[frgInd + imagSize * ((ith_imgIn + c + 1) % 5) + 1];
-		//_b += recFunc(adjst * (float)c) * d_imgIn[frgInd + imagSize * ((ith_imgIn + c + 1) % 5) + 2];
+		coeffSm += recFunc(adjst * (float)(4 - c));
+		_r += recFunc(adjst * (float)c) * d_imgIn[frgInd + imagSize * ((ith_imgIn + c -4) % 5)];
+		_g += recFunc(adjst * (float)c) * d_imgIn[frgInd + imagSize * ((ith_imgIn + c -4) % 5) + 1];
+		_b += recFunc(adjst * (float)c) * d_imgIn[frgInd + imagSize * ((ith_imgIn + c -4) % 5) + 2];
 
-		_r += gausFunc(adjst * (float)(4 - c)) * d_imgIn[frgInd + imagSize * ((ith_imgIn + c - 4) % 5)];
+	/*	_r += gausFunc(adjst * (float)(4 - c)) * d_imgIn[frgInd + imagSize * ((ith_imgIn + c - 4) % 5)];
 		_g += gausFunc(adjst * (float)(4 - c)) * d_imgIn[frgInd + imagSize * ((ith_imgIn + c - 4) % 5) + 1];
-		_b += gausFunc(adjst * (float)(4 - c)) * d_imgIn[frgInd + imagSize * ((ith_imgIn + c - 4) % 5) + 2];
+		_b += gausFunc(adjst * (float)(4 - c)) * d_imgIn[frgInd + imagSize * ((ith_imgIn + c - 4) % 5) + 2];*/
 	}																		 
 
 	d_imgOut[frgInd + 0] = _r / coeffSm;
@@ -332,7 +333,7 @@ cudaError_t ImgProcCUDA_CircularBuff(int numOfImgToProc, int numImages) {
 	unsigned char* h_imgIn_test, * h_imgOut_test;
 
 	//time
-	clock_t tStart;
+	clock_t tStart_eachLoop;
 	vector<double> timeRecord;
 
 	//read 1 image to fetch some variables
@@ -406,7 +407,7 @@ cudaError_t ImgProcCUDA_CircularBuff(int numOfImgToProc, int numImages) {
 			exit(-1);
 		}
 
-		tStart = clock();
+		tStart_eachLoop = clock();
 		//=====================================
 		//Copy
 		//Copy 1 image at a time using circular buffer
@@ -435,19 +436,18 @@ cudaError_t ImgProcCUDA_CircularBuff(int numOfImgToProc, int numImages) {
 		
 		cudaEvent_t startT, stopT;
 		float time;
-		cudaEventCreate(&startT, 0);
-		cudaEventRecord(startT);
+		//cudaEventCreate(&startT, 0);
+		//cudaEventRecord(startT);
 
 		RecDecayKernel_circularBuff <<< dimGrid, dimBlock >>> (d_imgIn_test, d_imgOut_test, w_test, h_test, components_test, ithImg);
 
-		cudaEventCreate(&stopT);
-		cudaEventRecord(stopT, 0);
-		cudaEventSynchronize(stopT);
-		cudaEventElapsedTime(&time, startT, stopT);
-		cudaEventDestroy(startT);
-		cudaEventDestroy(stopT);
-		std::cout << "kernel excecution time: " << time * 0.001f << "s\n";
-		
+		//cudaEventCreate(&stopT);
+		//cudaEventRecord(stopT, 0);
+		//cudaEventSynchronize(stopT);
+		//cudaEventElapsedTime(&time, startT, stopT);
+		//cudaEventDestroy(startT);
+		//cudaEventDestroy(stopT);
+		//std::cout << "kernel excecution time: " << time * 0.001f << "s\n";
 
 		//========================================================
 		// Check for any errors launching the kernel
@@ -470,7 +470,7 @@ cudaError_t ImgProcCUDA_CircularBuff(int numOfImgToProc, int numImages) {
 			goto Error;
 		}
 
-		cout << "\nTime taken this loop: " << (double)(clock() - tStart) / CLOCKS_PER_SEC << endl;
+		cout << "\nTime taken this loop: " << (double)(clock() - tStart_eachLoop) / CLOCKS_PER_SEC << endl;
 
 		//write into PNG=============================================
 		cout << "Saving the image\n";
@@ -483,7 +483,7 @@ cudaError_t ImgProcCUDA_CircularBuff(int numOfImgToProc, int numImages) {
 
 
 		//output time taken each loop
-		timeRecord.push_back((double)(clock() - tStart) / CLOCKS_PER_SEC);
+		timeRecord.push_back((double)(clock() - tStart_eachLoop) / CLOCKS_PER_SEC);
 	}
 
 	printResult(&timeRecord, w_test, h_test, components_test);
@@ -504,8 +504,7 @@ int main()
 	cudaError_t cudaStatus;
 
 	ImgProcCUDA_CircularBuff(300, imageCount);
-	//ImgProcCUDA_cartridgeBuff(200, imageCount);
-	
+	//ImgProcCUDA_cartridgeBuff(300, imageCount);
 
 	// cudaDeviceReset must be called before exiting in order for profiling and
 	// tracing tools such as Nsight and Visual Profiler to show complete traces.
